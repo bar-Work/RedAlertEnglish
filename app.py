@@ -30,7 +30,6 @@ def fetch_alerts():
         "X-Requested-With": "XMLHttpRequest",
         "User-Agent": "Mozilla/5.0"
     }
-    
     current_active_cities = set()
     
     while True:
