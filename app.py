@@ -1,70 +1,138 @@
-from flask import Flask, render_template, send_from_directory
-from flask_socketio import SocketIO
-import requests
-import threading
-import time
-import json
-import os
+cat << 'EOF' > templates/index.html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Israel Red Alert - Light Mode Live</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; font-family: sans-serif; }
+        #map { width: 100%; height: 100vh; z-index: 1; }
 
-app = Flask(__name__)
-socketio = SocketIO(app, cors_allowed_origins="*")
+        /* תיבת התרעות צפה בצד שמאל למעלה */
+        #floating-alerts {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            width: 300px;
+            max-height: 80vh;
+            overflow-y: auto;
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            pointer-events: none;
+        }
 
-def load_translator():
-    if os.path.exists('cities_en.json'):
-        with open('cities_en.json', 'r', encoding='utf-8-sig') as f:
-            return json.load(f)
-    return {}
+        .alert-card {
+            background: rgba(255, 255, 255, 0.95); /* לבן נקי עם מעט שקיפות */
+            color: #333;
+            padding: 15px;
+            border-left: 6px solid #ff0000;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            pointer-events: auto;
+            animation: slideInLeft 0.5s ease-out;
+            transition: opacity 0.5s ease;
+        }
 
-translator = load_translator()
+        @keyframes slideInLeft {
+            from { transform: translateX(-120%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
 
-def fetch_alerts():
-    url = "https://www.oref.org.il/WarningMessages/alert/alerts.json"
-    headers = {
-        "Referer": "https://www.oref.org.il/",
-        "X-Requested-With": "XMLHttpRequest",
-        "User-Agent": "Mozilla/5.0"
-    }
-    
-    current_active_cities = set()
-    
-    while True:
-        try:
-            response = requests.get(url, headers=headers, timeout=5)
-            api_cities = set()
-            category = 'Alert'
+        .status-indicator {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            padding: 5px 12px;
+            background: rgba(255,255,255,0.8);
+            color: #2e7d32;
+            font-size: 12px;
+            border-radius: 20px;
+            z-index: 1000;
+            font-weight: bold;
+            border: 1px solid #2e7d32;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div id="floating-alerts"></div>
+    <div class="status-indicator">● LIVE CONNECTION</div>
+
+    <script>
+        var map = L.map('map', { zoomControl: false }).setView([31.5, 34.9], 8);
+        L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+        // מפת Light Mode נעימה
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; OpenStreetMap, &copy; CARTO'
+        }).addTo(map);
+
+        var socket = io();
+        var allZonesData = null; 
+        var activePolygons = {}; 
+        var alertStyle = { color: "#ff0000", weight: 3, fillColor: "#ff0000", fillOpacity: 0.4 };
+
+        fetch('/zones.json').then(r => r.json()).then(data => { allZonesData = data; });
+
+        socket.on('new_alert', function(data) {
+            var container = document.getElementById('floating-alerts');
+            var card = document.createElement('div');
+            card.className = 'alert-card';
             
-            if response.status_code == 200 and len(response.content) > 2:
-                data = response.json()
-                api_cities = set(data.get('data', []))
-                category = data.get('title', 'Alert')
+            let englishNames = data.cities.map(c => c.en).join(', ');
+            card.innerHTML = `<div style="font-weight: bold; color: #d32f2f; font-size: 16px; margin-bottom: 5px;">🚨 ${data.category}</div>
+                              <div style="font-size: 14px; line-height: 1.4;">${englishNames}</div>
+                              <div style="font-size: 11px; color: #888; margin-top: 8px;">${data.timestamp}</div>`;
             
-            # 1. אזעקות חדשות שנוספו לרשימה
-            added = api_cities - current_active_cities
-            if added:
-                en_category = translator.get(category, category)
-                en_cities = [{"he": c, "en": translator.get(c, c)} for c in added]
-                socketio.emit('new_alert', {"category": en_category, "cities": en_cities, "timestamp": time.strftime('%H:%M:%S')})
-                
-            # 2. אזעקות שהוסרו מהרשימה של פיקוד העורף
-            removed = current_active_cities - api_cities
-            if removed:
-                socketio.emit('remove_alert', {"cities": list(removed)})
-                
-            current_active_cities = api_cities
-        except:
-            pass
-        time.sleep(1)
+            container.prepend(card);
 
-@app.route('/')
-def index():
-    return render_template('index.html')
+            // הסרה אוטומטית אחרי 30 שניות
+            setTimeout(() => { 
+                card.style.opacity = '0'; 
+                setTimeout(() => card.remove(), 500); 
+            }, 30000);
 
-@app.route('/zones.json')
-def get_zones():
-    return send_from_directory(os.getcwd(), 'zones.json')
+            if (allZonesData) {
+                let bounds = L.latLngBounds(); 
+                data.cities.forEach(cityObj => {
+                    let heName = cityObj.he.trim();
+                    let coords = allZonesData[heName];
+                    if (!coords) {
+                        let key = Object.keys(allZonesData).find(k => k.includes(heName));
+                        if (key) coords = allZonesData[key];
+                    }
 
-if __name__ == '__main__':
-    thread = threading.Thread(target=fetch_alerts)
-    thread.daemon = True
-    thread.start()
-    socketio.run(app, debug=True, port=5001)
+                    if (coords) {
+                        function fix(arr) {
+                            if (arr.length === 2 && typeof arr[0] === 'number') return arr[0] > 33.5 ? [arr[1], arr[0]] : [arr[0], arr[1]];
+                            return arr.map(i => fix(i));
+                        }
+                        if (activePolygons[heName]) map.removeLayer(activePolygons[heName]);
+                        let poly = L.polygon(fix(coords), alertStyle).addTo(map);
+                        poly.bindPopup(`<b>${cityObj.en}</b><br>${data.category}`);
+                        activePolygons[heName] = poly;
+                        bounds.extend(poly.getBounds());
+                    }
+                });
+                if (bounds.isValid()) map.flyToBounds(bounds, { padding: [50, 50], duration: 1.5 });
+            }
+        });
+
+        socket.on('remove_alert', function(data) {
+            data.cities.forEach(heName => {
+                if (activePolygons[heName]) {
+                    map.removeLayer(activePolygons[heName]);
+                    delete activePolygons[heName];
+                }
+            });
+        });
+    </script>
+</body>
+</html>
+EOF
