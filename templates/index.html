@@ -1,82 +1,115 @@
-cat << 'EOF' > templates/index.html
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Israel Red Alert - Light Mode Live</title>
-    <meta charset="utf-8" />
+    <meta charset="UTF-8">
+    <title>Israel Real-Time Alerts Map</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
-        body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; font-family: sans-serif; }
+        body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         #map { width: 100%; height: 100vh; z-index: 1; }
 
-        /* תיבת התרעות צפה בצד שמאל למעלה */
+        /* לוגו ושעון בסגנון Threats.co.il */
+        #header-overlay {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        #logo-box {
+            background: white;
+            padding: 10px 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            font-weight: bold;
+            font-size: 18px;
+            color: #f30000;
+            border: 1px solid #eee;
+        }
+        #clock-box {
+            background: rgba(255,255,255,0.9);
+            padding: 5px 12px;
+            border-radius: 6px;
+            font-size: 14px;
+            color: #333;
+            display: inline-block;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        }
+
+        /* התרעות צפות בצד שמאל */
         #floating-alerts {
             position: absolute;
-            top: 20px;
-            left: 20px;
-            width: 300px;
-            max-height: 80vh;
-            overflow-y: auto;
+            top: 100px; /* מתחת ללוגו */
+            left: 15px;
+            width: 280px;
             z-index: 1000;
             display: flex;
             flex-direction: column;
             gap: 10px;
             pointer-events: none;
         }
-
         .alert-card {
-            background: rgba(255, 255, 255, 0.95); /* לבן נקי עם מעט שקיפות */
+            background: rgba(255, 255, 255, 0.98);
             color: #333;
             padding: 15px;
-            border-left: 6px solid #ff0000;
+            border-left: 6px solid #f30000;
             border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            box-shadow: 0 4px 15px rgba(0,0,0,0.15);
             pointer-events: auto;
-            animation: slideInLeft 0.5s ease-out;
-            transition: opacity 0.5s ease;
+            animation: slideIn 0.4s ease-out;
         }
+        @keyframes slideIn { from { transform: translateX(-110%); } to { transform: translateX(0); } }
 
-        @keyframes slideInLeft {
-            from { transform: translateX(-120%); opacity: 0; }
-            to { transform: translateX(0); opacity: 1; }
-        }
-
-        .status-indicator {
+        .status-dot {
             position: absolute;
-            bottom: 20px;
-            right: 20px;
-            padding: 5px 12px;
-            background: rgba(255,255,255,0.8);
-            color: #2e7d32;
-            font-size: 12px;
+            bottom: 15px;
+            right: 15px;
+            padding: 4px 10px;
+            background: white;
             border-radius: 20px;
-            z-index: 1000;
+            font-size: 11px;
             font-weight: bold;
-            border: 1px solid #2e7d32;
+            color: #2e7d32;
+            z-index: 1000;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
         }
     </style>
 </head>
 <body>
+    <div id="header-overlay">
+        <div id="logo-box">Alerts Israel</div>
+        <div id="clock-box"><span id="live-clock"></span></div>
+    </div>
+    
     <div id="map"></div>
     <div id="floating-alerts"></div>
-    <div class="status-indicator">● LIVE CONNECTION</div>
+    <div class="status-dot">● LIVE SYSTEM ACTIVE</div>
 
     <script>
+        // שעון חי
+        function updateClock() {
+            const now = new Date();
+            document.getElementById('live-clock').innerText = now.toLocaleTimeString('he-IL') + " | " + now.toLocaleDateString('he-IL');
+        }
+        setInterval(updateClock, 1000);
+        updateClock();
+
         var map = L.map('map', { zoomControl: false }).setView([31.5, 34.9], 8);
         L.control.zoom({ position: 'bottomright' }).addTo(map);
 
-        // מפת Light Mode נעימה
         L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-            attribution: '&copy; OpenStreetMap, &copy; CARTO'
+            attribution: '&copy; OpenStreetMap'
         }).addTo(map);
 
         var socket = io();
         var allZonesData = null; 
         var activePolygons = {}; 
-        var alertStyle = { color: "#ff0000", weight: 3, fillColor: "#ff0000", fillOpacity: 0.4 };
+        var alertStyle = { color: "#f30000", weight: 3, fillColor: "#f30000", fillOpacity: 0.4 };
 
         fetch('/zones.json').then(r => r.json()).then(data => { allZonesData = data; });
 
@@ -86,27 +119,17 @@ cat << 'EOF' > templates/index.html
             card.className = 'alert-card';
             
             let englishNames = data.cities.map(c => c.en).join(', ');
-            card.innerHTML = `<div style="font-weight: bold; color: #d32f2f; font-size: 16px; margin-bottom: 5px;">🚨 ${data.category}</div>
-                              <div style="font-size: 14px; line-height: 1.4;">${englishNames}</div>
-                              <div style="font-size: 11px; color: #888; margin-top: 8px;">${data.timestamp}</div>`;
+            card.innerHTML = `<div style="font-weight: bold; color: #f30000; font-size: 15px;">🚨 ${data.category}</div>
+                              <div style="font-size: 14px; margin-top: 4px;">${englishNames}</div>`;
             
             container.prepend(card);
-
-            // הסרה אוטומטית אחרי 30 שניות
-            setTimeout(() => { 
-                card.style.opacity = '0'; 
-                setTimeout(() => card.remove(), 500); 
-            }, 30000);
+            setTimeout(() => { card.style.opacity = '0'; setTimeout(() => card.remove(), 500); }, 30000);
 
             if (allZonesData) {
                 let bounds = L.latLngBounds(); 
                 data.cities.forEach(cityObj => {
                     let heName = cityObj.he.trim();
-                    let coords = allZonesData[heName];
-                    if (!coords) {
-                        let key = Object.keys(allZonesData).find(k => k.includes(heName));
-                        if (key) coords = allZonesData[key];
-                    }
+                    let coords = allZonesData[heName] || (Object.keys(allZonesData).find(k => k.includes(heName)) ? allZonesData[Object.keys(allZonesData).find(k => k.includes(heName))] : null);
 
                     if (coords) {
                         function fix(arr) {
@@ -115,7 +138,6 @@ cat << 'EOF' > templates/index.html
                         }
                         if (activePolygons[heName]) map.removeLayer(activePolygons[heName]);
                         let poly = L.polygon(fix(coords), alertStyle).addTo(map);
-                        poly.bindPopup(`<b>${cityObj.en}</b><br>${data.category}`);
                         activePolygons[heName] = poly;
                         bounds.extend(poly.getBounds());
                     }
@@ -135,4 +157,3 @@ cat << 'EOF' > templates/index.html
     </script>
 </body>
 </html>
-EOF
