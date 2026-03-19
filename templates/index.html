@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Israel Red Alert - Live Feed</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        body { font-family: sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; }
+        #map { flex-grow: 1; z-index: 1; }
+        #alerts-panel { height: 250px; overflow-y: auto; background: #f8f8f8; padding: 15px; border-top: 2px solid #ccc; position: relative; }
+        .alert-item { padding: 12px; border-bottom: 1px solid #ddd; margin-bottom: 8px; background: white; border-left: 6px solid #ff0000; border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .status-badge { position: absolute; top: 10px; left: 10px; padding: 8px 15px; background: rgba(0,0,0,0.8); color: #00ff00; border-radius: 4px; font-weight: bold; z-index: 1000; font-size: 14px; border: 1px solid #00ff00; }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div id="alerts-panel">
+        <div class="status-badge">● LIVE SYNC ACTIVE</div>
+        <h3>Live Alerts (English)</h3>
+        <div id="alerts-list">Waiting for real-time alerts from Home Front Command...</div>
+    </div>
+
+    <script>
+        var map = L.map('map').setView([31.5, 34.9], 8);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; OpenStreetMap, &copy; CARTO'
+        }).addTo(map);
+
+        var socket = io();
+        var allZonesData = null; 
+        var activePolygons = {}; // מילון לשמירת הפוליגונים שעל המפה כרגע
+
+        var alertStyle = { color: "#ff0000", weight: 3, fillColor: "#ff0000", fillOpacity: 0.6 };
+
+        fetch('/zones.json').then(r => r.json()).then(data => { allZonesData = data; });
+
+        // פקודה מהשרת: לצייר אזעקה חדשה
+        socket.on('new_alert', function(data) {
+            var list = document.getElementById('alerts-list');
+            if(list.innerText.includes("Waiting")) list.innerHTML = "";
+            
+            let englishNames = data.cities.map(c => c.en).join(', ');
+            var item = document.createElement('div');
+            item.className = 'alert-item';
+            item.innerHTML = `<strong>🚨 ${data.category}</strong><br>
+                              <span style="color: #d32f2f;">Locations: ${englishNames}</span><br>
+                              <small style="color: #666;">Time: ${data.timestamp}</small>`;
+            list.prepend(item);
+
+            if (allZonesData) {
+                let bounds = L.latLngBounds(); 
+                data.cities.forEach(cityObj => {
+                    let heName = cityObj.he.trim();
+                    let coords = allZonesData[heName];
+
+                    if (coords && Array.isArray(coords)) {
+                        function fixArray(arr) {
+                            if (arr.length === 2 && typeof arr[0] === 'number') return arr[0] > 33.5 ? [arr[1], arr[0]] : [arr[0], arr[1]];
+                            return arr.map(item => Array.isArray(item) ? fixArray(item) : item);
+                        }
+                        
+                        // אם העיר כבר מופיעה (למשל אזעקה חוזרת), נסיר אותה קודם
+                        if (activePolygons[heName]) map.removeLayer(activePolygons[heName]);
+
+                        let poly = L.polygon(fixArray(coords), alertStyle).addTo(map);
+                        poly.bindPopup(`<b>${cityObj.en}</b><br>${data.category}`);
+                        activePolygons[heName] = poly;
+                        bounds.extend(poly.getBounds());
+                    }
+                });
+                if (bounds.isValid()) map.flyToBounds(bounds, { padding: [30, 30], duration: 1.5 });
+            }
+        });
+
+        // פקודה מהשרת: להסיר אזעקה שהסתיימה בפיקוד העורף
+        socket.on('remove_alert', function(data) {
+            data.cities.forEach(heName => {
+                if (activePolygons[heName]) {
+                    map.removeLayer(activePolygons[heName]);
+                    delete activePolygons[heName];
+                }
+            });
+        });
+    </script>
+</body>
+</html>
